@@ -6,3 +6,6 @@ __pycache__
 *_Perf.log
 test.json
 benchmark_scripts
+SYSTEM.md
+.DS_Store
+.idea/
