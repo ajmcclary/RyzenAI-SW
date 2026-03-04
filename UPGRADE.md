@@ -3,7 +3,7 @@
 **System:** Fedora 43 / AMD Ryzen AI MAX+ 395 (Strix Halo) / 96 GB LPDDR5X
 **Hardware:** 16C/32T CPU, Radeon 8060S iGPU (gfx1151), NPU (AIE2P, amdxdna)
 **Goal:** Leverage all three compute targets (CPU, GPU, NPU) for AI inference on Linux.
-**Updated:** 2026-03-04
+**Updated:** 2026-03-05
 
 ---
 
@@ -13,7 +13,7 @@ The foundation is not broken. Fedora 43, kubeadm, containerd, ROCm-in-containers
 
 The upgrade path follows this order:
 
-1. **Upgrade the kernel.** Highest-leverage single action. Unblocks NPU, costs 5 minutes + a reboot.
+1. **Upgrade the kernel.** Highest-leverage single action. Unblocks NPU. Kernel 6.19.2+ is the clean target, but Fedora 43 repos only ship up to 6.18.x — see Problem 1 for the two-step strategy.
 2. **Validate NPU natively on the host, outside Kubernetes.** Do not containerize NPU experiments until native validation is boring.
 3. **Clean up Kubernetes around workload classes and resource policy.** Add quotas, priorities, and better resource modeling.
 4. **Only add another OS if you want a vendor-reference lane**, not as your first rescue move.
@@ -78,13 +78,37 @@ NPU firmware is present (`17f0_11/npu.sbin.1.0.0.166.xz`) and XRT 2.19.0 is inst
 
 **Fix:** Upgrade to kernel **6.19.2+**, which resolves both the SVA regression and a separate firmware protocol incompatibility introduced in 6.18.8.
 
-```bash
-# Check for available kernel updates
-sudo dnf check-update kernel
+### Kernel Availability (as of 2026-03-04)
 
-# If 6.19.2+ is available
+Fedora 43 repos do **not** ship kernel 6.19.x. The available versions are:
+
+| Repo | Version | NPU Status |
+|---|---|---|
+| `fedora` | 6.17.1-300.fc43 | Pre-regression (NPU may work, but older driver support) |
+| `updates` | **6.18.13-200.fc43** | SVA regression fixed (6.18.8+), but firmware protocol issue may persist |
+| *needed* | **6.19.2+** | Both issues resolved — clean target |
+
+This means the original "5 min + reboot" estimate was wrong. The upgrade is a two-step decision:
+
+**Step A — Try 6.18.13 first (low risk, available now):**
+
+```bash
 sudo dnf upgrade kernel
+# Installs 6.18.13-200.fc43 — reboot and test xrt-smi examine
 ```
+
+Kernel 6.18.13 fixes the SVA regression (6.18.0-6.18.7) but may still have the firmware protocol incompatibility introduced in 6.18.8. Fedora often backports fixes, so 6.18.13 *might* include the fix — **test before assuming it doesn't work.** If `xrt-smi examine` detects the NPU and dmesg is clean, you're done.
+
+**Step B — If 6.18.13 doesn't fix NPU, escalate to 6.19.2+:**
+
+| Option | Effort | Risk |
+|---|---|---|
+| **Wait for Fedora 44** | Zero effort, unknown timeline | NPU stays blocked until release |
+| **Koji / Bodhi build** | `koji download-build kernel-6.19.x` + manual install | Medium — unsupported kernel, no auto-updates |
+| **Fedora Rawhide kernel** | `sudo dnf --enablerepo=rawhide upgrade kernel` | Higher — pulls bleeding-edge deps |
+| **Build from source** | `make -j32` with Fedora config + amdxdna patches | 30+ min, requires ongoing maintenance |
+
+> **Recommendation:** Try Step A first. If 6.18.13 works for the NPU, the problem is solved with zero complexity. Only escalate to Step B if `xrt-smi examine` still fails after the 6.18.13 upgrade.
 
 > **Note:** Kernel 6.18.4+ also introduced `amdgpu.cwsr_enable=0` requirements for ROCm stability on gfx1151. Your Kubernetes Ollama deployment may need this kernel parameter if you see MES firmware hangs after a kernel upgrade.
 
@@ -183,14 +207,15 @@ export XLNX_VART_FIRMWARE=<path>/voe/1x4.xclbin
 
 ## Problem 6: Python Environment & Runtime Library Mismatch
 
-**Impact:** Low — partially mitigated, needs completion.
+**Impact:** Low — all libraries exist on disk, just need `LD_LIBRARY_PATH`.
 
-The CVML VitisAI EP requires two shared libraries at runtime that are **not found** on the system:
+The CVML VitisAI EP requires specific shared libraries at runtime. All are present but two are not on the default library search path:
 
 | Library | Required By | Status |
 |---|---|---|
-| `libpython3.10.so.1.0` | VitisAI EP (CVML) | **NOT FOUND** — Python 3.10 exists in `py310` env but `.so` not on `LD_LIBRARY_PATH` |
-| `libboost_filesystem.so.1.74.0` | VitisAI EP (CVML) | **NOT FOUND** — needs install or symlink |
+| `libpython3.10.so.1.0` | VitisAI EP (CVML) | Present in `py310` env at `$CONDA_PREFIX/lib/` — needs `LD_LIBRARY_PATH` |
+| `libboost_filesystem.so.1.74.0` | VitisAI EP (CVML) | Present in `py310` env at `$CONDA_PREFIX/lib/` — needs `LD_LIBRARY_PATH` |
+| `libboost_filesystem.so.1.83.0` | (system) | Found at `/lib64/` — wrong version for CVML (needs 1.74) |
 | `libgomp.so.1` | ORT parallel execution | Found at `/lib64/libgomp.so.1` |
 | `libstdc++.so.6` | C++ runtime | Found at `/lib64/libstdc++.so.6` |
 
@@ -199,16 +224,18 @@ The CVML VitisAI EP requires two shared libraries at runtime that are **not foun
 | Environment | Python | Purpose |
 |---|---|---|
 | base | 3.13.12 | System default — too new for Ryzen AI |
-| py310 | 3.10.19 | CVML runtime deps — correct Python version |
+| py310 | 3.10.19 | CVML runtime deps — has libpython3.10 + boost 1.74 |
 | ryzenai-test | 3.12.12 | SDK 1.7 target (sweet spot: broad compatibility) |
 
-**To fix:** Activate `py310`, install `boost` 1.74 via conda, and set `LD_LIBRARY_PATH` to include the env's `lib/` directory. For new SDK-based work, use `ryzenai-test` (Python 3.12 is the primary target for Ryzen AI SDK 1.7).
+**To fix:** Activate `py310` and set `LD_LIBRARY_PATH`. Both required libraries are already installed — no `conda install` needed.
 
 ```bash
-# Make CVML runtime deps discoverable
+# Make CVML runtime deps discoverable (both libs already present)
 conda activate py310
-conda install boost=1.74
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+
+# Verify
+ldd /path/to/libonnxruntime_vitisai_ep.so | grep -E 'python|boost'
 ```
 
 ---
@@ -221,20 +248,24 @@ Strix Halo is a **unified-memory APU** — CPU, GPU, and NPU all share the same 
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                  96 GB LPDDR5X (Physical)                       │
+│            96 GB LPDDR5X (Physical, 8000 MT/s Micron)           │
+│            93.9 GiB visible to OS (rest: BIOS/firmware reserve) │
 │                                                                 │
 │  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────┐ │
 │  │  CPU (host)  │  │  GPU (VRAM)  │  │   GPU (GTT / shared)   │ │
-│  │  ~62 GB      │  │  32 GB BAR   │  │   ~124 GB addressable  │ │
-│  │  available   │  │  2.6 GB used │  │   9.2 GB used          │ │
+│  │  72.9 GiB    │  │  32 GiB BAR  │  │   124 GiB addressable  │ │
+│  │  available   │  │  2.6 GiB used│  │   9.2 GiB used         │ │
 │  └─────────────┘  └──────────────┘  └────────────────────────┘ │
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │  NPU (amdxdna)                                              ││
 │  │  DMA from host memory — no dedicated pool                   ││
+│  │  Currently blocked: xrt-smi reports "No devices found"      ││
 │  └─────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+> **Memory accounting note:** dmidecode reports 7 × 16 GB LPDDR5 entries (112 GB), but the OS sees 93.9 GiB (~100.8 GB). The ~11 GB gap is BIOS-reserved (VRAM carve-out + firmware). GTT's 124 GiB addressable space exceeds physical RAM because it includes swap-backed virtual ranges — actual physical backing is shared with CPU memory.
 
 **Key principles from AMD:**
 
@@ -518,19 +549,40 @@ These components are confirmed working and require no action:
 
 | # | Action | Effort |
 |---|---|---|
-| 1 | **Upgrade kernel to 6.19.2+** — unblocks NPU driver (the single highest-impact action) | 5 min + reboot |
+| 1 | **Upgrade kernel** — try 6.18.13 first (`dnf upgrade kernel`), escalate to 6.19.2+ if NPU still fails (see Problem 1) | 10 min + reboot (Step A); 30+ min (Step B) |
 | 2 | **Register for [AMD Early Access](https://account.amd.com/en/member/ryzenai-sw-ea.html)** — gate to Linux SDK | 5 min |
-| 3 | **Fix CVML runtime deps** — activate `py310`, install boost 1.74, set `LD_LIBRARY_PATH` | 10 min |
+| 3 | **Fix CVML runtime deps** — activate `py310`, set `LD_LIBRARY_PATH` (deps already installed, just not on path) | 2 min |
 | 4 | **Add `amdgpu.cwsr_enable=0`** to kernel cmdline if ROCm instability occurs after kernel upgrade | 2 min |
+| 4a | **Clean up completed K8s jobs** — `hook-image-awaiter` (default ns) and `bs-roformer-sw-benchmark` (music-intelligence) | 1 min |
 
 ### Phase 1 — Native NPU Validation (after kernel upgrade, before K8s)
 
 > **Principle:** Do not containerize NPU experiments until native validation is boring. AMD's Linux paths still involve manual library paths and config edits for some flows. That is not where you add another layer of abstraction.
 
+#### Current Baseline (kernel 6.18.3 — broken)
+
+These are the symptoms to verify are resolved after the kernel upgrade:
+
+```
+$ xrt-smi examine
+[xrt-smi] ERROR: No devices found.
+
+$ dmesg | grep amdxdna
+amdxdna 0000:c8:00.1: enabling device (0000 -> 0002)
+[drm] Initialized amdxdna_accel_driver 0.1.0 for 0000:c8:00.1 on minor 0
+amdxdna 0000:c8:00.1: [drm] *ERROR* aie2_get_info: Not supported request parameter 4
+```
+
+The driver loads and the device node exists, but the IOMMU SVA regression prevents the driver from communicating with NPU firmware. The `aie2_get_info` error is the telltale.
+
+#### Expected Post-Upgrade State
+
+After a successful kernel upgrade, `xrt-smi examine` should report the NPU device (AIE2P, device ID `17f0`, revision `11`) with firmware version, and dmesg should show no `*ERROR*` lines from `amdxdna`.
+
 | # | Action | Effort |
 |---|---|---|
-| 5 | **Reboot and verify NPU** — `xrt-smi examine` should succeed without dmesg errors | 5 min |
-| 6 | **Test CVML C++ inference** — run a simple CNN model through VitisAI EP with CVML libs | 30 min |
+| 5 | **Reboot and verify NPU** — `xrt-smi examine` should detect NPU; `dmesg \| grep amdxdna` should show no errors | 5 min |
+| 6 | **Test CVML C++ inference** — run a simple CNN model through VitisAI EP with CVML libs (activate `py310`, set `LD_LIBRARY_PATH`) | 30 min |
 | 7 | **Re-test whisper.cpp VitisAI ORT** — check if ops still fall back to CPU (expected: yes, pending partition pass) | 10 min |
 
 ### Phase 2 — Kubernetes Policy (parallel with Phase 1)
