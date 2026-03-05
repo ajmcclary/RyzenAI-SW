@@ -552,9 +552,9 @@ These components are confirmed working and require no action:
 |---|---|---|
 | ~~1~~ | ~~**Upgrade kernel** — 6.18.13 installed, NPU working~~ | **DONE** (2026-03-05) |
 | ~~2~~ | ~~**Register for AMD Early Access**~~ — EA program closed; all deliverables are now **GA (Generally Available)**. SDK should be downloadable directly. | **N/A** |
-| 3 | **Fix CVML runtime deps** — activate `py310`, set `LD_LIBRARY_PATH` (deps already installed, just not on path) | 2 min |
+| ~~3~~ | ~~**Fix CVML runtime deps**~~ — conda activate hook installed (`py310/etc/conda/activate.d/cvml.sh`); `LD_LIBRARY_PATH` auto-set on `conda activate py310` | **DONE** |
 | 4 | **Add `amdgpu.cwsr_enable=0`** to kernel cmdline if ROCm instability occurs after kernel upgrade — **not needed so far** (K8s GPU pods running normally on 6.18.13) | 2 min (if needed) |
-| 4a | **Clean up completed K8s jobs** — `hook-image-awaiter` (default ns) and `bs-roformer-sw-benchmark` (music-intelligence) | 1 min |
+| ~~4a~~ | ~~**Clean up completed K8s jobs**~~ — both deleted | **DONE** |
 
 ### Phase 1 — Native NPU Validation (after kernel upgrade, before K8s)
 
@@ -583,8 +583,8 @@ amdxdna 0000:c8:00.1: enabling device (0000 -> 0002)
 | # | Action | Effort |
 |---|---|---|
 | ~~5~~ | ~~**Reboot and verify NPU** — RyzenAI-npu5 detected, FW 1.0.0.166, dmesg clean~~ | **DONE** (2026-03-05) |
-| 6 | **Test CVML C++ inference** — run a simple CNN model through VitisAI EP with CVML libs (activate `py310`, set `LD_LIBRARY_PATH`) | 30 min |
-| 7 | **Re-test whisper.cpp VitisAI ORT** — check if ops still fall back to CPU (expected: yes, pending partition pass) | 10 min |
+| ~~6~~ | ~~**Test CVML C++ inference**~~ — VitisAI EP loads via shared provider bridge; VAIP framework runs passes; 413 Whisper ops fall to CPU (expected — dynamic shapes + missing vaiml_partition pass). Stack confirmed: ORT→VitisAI EP→VAIP→NPU driver. Test: `utilities/npu_check/test_vitisai_ep` | **DONE** |
+| ~~7~~ | ~~**Re-test whisper.cpp VitisAI ORT**~~ — VitisAI EP loads, 413 ops on CPU (expected: vaiml_partition pass still missing). Encode: 160ms. Full pipeline runs end-to-end. Env: `VITISAI_ORT_CONFIG_FILE` + `LD_LIBRARY_PATH` to CVML+py310 | **DONE** |
 
 ### Phase 2 — Kubernetes Policy (parallel with Phase 1)
 
