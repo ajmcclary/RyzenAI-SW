@@ -11,7 +11,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_FILE="${SCRIPT_DIR}/SYSTEM.md"
-REPORT_VERSION="1.2.0"
+REPORT_VERSION="1.3.0"
 NO_SUDO="false"
 SUDO_AVAILABLE="false"
 REPORT=""
@@ -65,7 +65,7 @@ init_sudo() {
         log_warn "Sudo disabled (--no-sudo). Some info will be limited."
         return
     fi
-    printf "${YELLOW}Some commands (dmidecode, dmesg) need sudo for enhanced info.${RESET}\n"
+    printf "${YELLOW}Some commands (dmidecode, dmesg, xrt-smi) need sudo for enhanced info.${RESET}\n"
     printf "Attempt sudo? [Y/n] "
     read -r response
     if [[ "$response" =~ ^[Nn] ]]; then
@@ -93,7 +93,7 @@ parse_args() {
                 echo "Generate SYSTEM.md with hardware/software details for AMD Ryzen AI."
                 echo ""
                 echo "Options:"
-                echo "  --no-sudo    Skip privileged commands (dmidecode, dmesg)"
+                echo "  --no-sudo    Skip privileged commands (dmidecode, dmesg, xrt-smi)"
                 echo "  --output     Output file path (default: SYSTEM.md in script directory)"
                 echo "  --help       Show this message"
                 exit 0
@@ -1088,12 +1088,22 @@ section_npu() {
         md ""
 
         # xrt-smi examine output
+        # NOTE: XRT 2.19+ checks geteuid()==0 in userspace and reports "No devices found"
+        # for non-root users even when the kernel driver works fine. Use try_sudo.
         if [[ -x /usr/xrt/bin/xrt-smi ]]; then
-            local xrt_examine
-            xrt_examine="$(/usr/xrt/bin/xrt-smi examine 2>&1 || true)"
+            local xrt_examine=""
+            if [[ "$SUDO_AVAILABLE" == "true" ]]; then
+                xrt_examine="$(try_sudo /usr/xrt/bin/xrt-smi examine 2>&1 || true)"
+            else
+                xrt_examine="$(/usr/xrt/bin/xrt-smi examine 2>&1 || true)"
+            fi
             if [[ -n "$xrt_examine" ]]; then
                 md "### xrt-smi Examine"
                 md ""
+                if [[ "$SUDO_AVAILABLE" != "true" ]]; then
+                    md "> **Note:** xrt-smi requires root (XRT checks euid==0). Output may show \"No devices found\" without sudo."
+                    md ""
+                fi
                 md "<details>"
                 md "<summary>Click to expand</summary>"
                 md ""
@@ -1105,7 +1115,11 @@ section_npu() {
                 md ""
 
                 if echo "$xrt_examine" | grep -qi "ERROR.*No devices found"; then
-                    log_warn "xrt-smi examine: No devices found (kernel regression?)"
+                    if [[ "$SUDO_AVAILABLE" != "true" ]]; then
+                        log_warn "xrt-smi examine: No devices found (needs root — XRT checks euid==0)"
+                    else
+                        log_warn "xrt-smi examine: No devices found (driver issue?)"
+                    fi
                 elif echo "$xrt_examine" | grep -qi "error"; then
                     log_warn "xrt-smi examine: errors detected"
                 else
@@ -1199,18 +1213,21 @@ section_npu() {
     local vaip_core_found="false"
     local xcompiler_found="false"
     local vitisai_ep_found="false"
+    local vitisai_provider_bridge_found="false"
     for dir in "${vaip_search_dirs[@]}"; do
         [[ -f "${dir}/libvaip-core.so" ]] && vaip_core_found="true"
         [[ -f "${dir}/libxcompiler-core-without-symbol.so" ]] && xcompiler_found="true"
         [[ -f "${dir}/libonnxruntime_vitisai_ep.so" ]] && vitisai_ep_found="true"
+        [[ -f "${dir}/libonnxruntime_providers_vitisai.so" ]] && vitisai_provider_bridge_found="true"
     done
 
     if [[ "$vaip_found" == "true" ]]; then
-        md "| Infrastructure Library | Found |"
-        md "|----------------------|-------|"
-        md "| \`libvaip-core.so\` | ${vaip_core_found} |"
-        md "| \`libxcompiler-core-without-symbol.so\` | ${xcompiler_found} |"
-        md "| \`libonnxruntime_vitisai_ep.so\` | ${vitisai_ep_found} |"
+        md "| Infrastructure Library | Found | Purpose |"
+        md "|----------------------|-------|---------|"
+        md "| \`libvaip-core.so\` | ${vaip_core_found} | VAIP pass framework |"
+        md "| \`libxcompiler-core-without-symbol.so\` | ${xcompiler_found} | XIR compiler |"
+        md "| \`libonnxruntime_vitisai_ep.so\` | ${vitisai_ep_found} | VitisAI EP implementation |"
+        md "| \`libonnxruntime_providers_vitisai.so\` | ${vitisai_provider_bridge_found} | ORT shared provider bridge (C++ API) |"
         md ""
     fi
 
@@ -1557,6 +1574,33 @@ section_software() {
         SUMMARY_STATUS["CVML Library"]="NOT FOUND"
         SUMMARY_DETAIL["CVML Library"]="--"
     fi
+
+    # Conda Activation Hooks (auto LD_LIBRARY_PATH for CVML)
+    md "### Conda Activation Hooks"
+    md ""
+    local hooks_found="false"
+    for env_dir in ~/miniforge3/envs/*/etc/conda/activate.d ~/miniconda3/envs/*/etc/conda/activate.d ~/anaconda3/envs/*/etc/conda/activate.d; do
+        for d in $env_dir; do
+            [[ -d "$d" ]] || continue
+            local env_name
+            env_name="$(basename "$(dirname "$(dirname "$(dirname "$d")")")")"
+            local hook_files
+            hook_files="$(ls "$d"/*.sh 2>/dev/null || true)"
+            if [[ -n "$hook_files" ]]; then
+                hooks_found="true"
+                while IFS= read -r hf; do
+                    [[ -z "$hf" ]] && continue
+                    local hf_name
+                    hf_name="$(basename "$hf")"
+                    md "- **${env_name}**: \`activate.d/${hf_name}\`"
+                done <<< "$hook_files"
+            fi
+        done
+    done
+    if [[ "$hooks_found" == "false" ]]; then
+        md "> No conda activation hooks found. Consider adding \`cvml.sh\` to auto-set LD_LIBRARY_PATH."
+    fi
+    md ""
 
     # VitisAI / ORT Environment Variables
     md "### VitisAI / ORT Environment Variables"
