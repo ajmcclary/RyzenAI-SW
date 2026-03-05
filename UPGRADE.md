@@ -135,11 +135,11 @@ The CVML set includes `libonnxruntime_vitisai_ep.so`, `libvaip-core.so`, and `li
 
 | Option | Pros | Cons |
 |---|---|---|
-| **A. Ryzen AI SDK 1.7 Early Access** | Bundles a working Linux ORT+VitisAI EP | Early Access gated; Ubuntu 24.04 only; Fedora unsupported |
+| **A. Ryzen AI SDK 1.7 (now GA)** | Bundles a working Linux ORT+VitisAI EP | Ubuntu 24.04 only; Fedora unsupported |
 | **B. CVML C++ libs (already have)** | No download needed; C++ API works today | No Python; missing `vaiml_partition` pass (see Problem 3) |
 | **C. Wait for public Linux wheels** | Zero friction when available | No timeline from AMD |
 
-**Recommended path:** Register for [AMD Early Access](https://account.amd.com/en/member/ryzenai-sw-ea.html) (option A) while using CVML C++ libs (option B) for what works today.
+**Recommended path:** Download Ryzen AI SDK 1.7 (now GA, option A) while using CVML C++ libs (option B) for what works today.
 
 ---
 
@@ -157,7 +157,7 @@ This pass is responsible for partitioning BF16 Whisper encoder ops onto the NPU 
 
 | Option | Pros | Cons |
 |---|---|---|
-| **A. Ryzen AI SDK 1.7 Early Access** | May include the pass as part of the bundled runtime | Unconfirmed; still Early Access |
+| **A. Ryzen AI SDK 1.7 (now GA)** | May include the pass as part of the bundled runtime | Unconfirmed; check GA release contents |
 | **B. Request from AMD directly** | Targeted ask; backend code is ready | Depends on AMD's roadmap |
 | **C. CPU fallback (current)** | Works now; ~158ms encode on Ryzen AI MAX+ | Not using NPU hardware |
 
@@ -551,7 +551,7 @@ These components are confirmed working and require no action:
 | # | Action | Effort |
 |---|---|---|
 | ~~1~~ | ~~**Upgrade kernel** — 6.18.13 installed, NPU working~~ | **DONE** (2026-03-05) |
-| 2 | **Register for [AMD Early Access](https://account.amd.com/en/member/ryzenai-sw-ea.html)** — gate to Linux SDK | 5 min |
+| ~~2~~ | ~~**Register for AMD Early Access**~~ — EA program closed; all deliverables are now **GA (Generally Available)**. SDK should be downloadable directly. | **N/A** |
 | 3 | **Fix CVML runtime deps** — activate `py310`, set `LD_LIBRARY_PATH` (deps already installed, just not on path) | 2 min |
 | 4 | **Add `amdgpu.cwsr_enable=0`** to kernel cmdline if ROCm instability occurs after kernel upgrade — **not needed so far** (K8s GPU pods running normally on 6.18.13) | 2 min (if needed) |
 | 4a | **Clean up completed K8s jobs** — `hook-image-awaiter` (default ns) and `bs-roformer-sw-benchmark` (music-intelligence) | 1 min |
@@ -600,7 +600,7 @@ This can happen independently of NPU work:
 
 > **Note on namespace migration:** This can be done incrementally. Start with PriorityClasses and LimitRanges in existing namespaces, then create new namespaces and migrate workloads one at a time. The `music-intelligence` CPU-only app services can stay in their own namespace with `stable-infra` priority.
 
-### Phase 3 — SDK Integration (once Early Access is granted)
+### Phase 3 — SDK Integration (SDK is now GA)
 
 | # | Action | Effort |
 |---|---|---|
@@ -714,7 +714,7 @@ All managed from `~/projects/dev/`:
 - [ROCm Linux Support Matrices (Radeon/Ryzen)](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/compatibility/compatibilityryz/native_linux/native_linux_compatibility.html) — Ubuntu 24.04.3 for gfx1151
 - [Ryzen AI SDK — Running LLMs on Linux](https://ryzenai.docs.amd.com/en/latest/llm_linux.html) — Linux OGA flows
 - [Ryzen AI SDK — Whisper.cpp Support](https://ryzenai.docs.amd.com/en/latest/whisper_cpp.html) — Windows-only NPU, Linux planned
-- [AMD Ryzen AI Early Access](https://account.amd.com/en/member/ryzenai-sw-ea.html) — SDK 1.7 Linux gated access
+- [AMD Ryzen AI SDK](https://ryzenai.docs.amd.com/en/latest/inst.html) — SDK 1.7 now GA (Early Access program closed)
 - [AMD Strix Halo Toolboxes (Ollama/ROCm)](https://github.com/kyuz0/amd-strix-halo-toolboxes)
 
 ### Kernel & Driver
