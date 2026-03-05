@@ -3,17 +3,17 @@
 **System:** Fedora 43 / AMD Ryzen AI MAX+ 395 (Strix Halo) / 96 GB LPDDR5X
 **Hardware:** 16C/32T CPU, Radeon 8060S iGPU (gfx1151), NPU (AIE2P, amdxdna)
 **Goal:** Leverage all three compute targets (CPU, GPU, NPU) for AI inference on Linux.
-**Updated:** 2026-03-05
+**Updated:** 2026-03-05 (post kernel upgrade + NPU verification)
 
 ---
 
 ## Strategic Priority: Kernel First, OS Second, Kubernetes Third
 
-The foundation is not broken. Fedora 43, kubeadm, containerd, ROCm-in-containers, Vulkan ASR, VAAPI Plex, ArkCase/Qdrant/MinIO — this is a working stack. The loudest problem is that the host is sitting on **kernel 6.18.3**, while AMD's Strix Halo guidance says the required upstream fixes land in **6.18.4+**; that same AMD guide also explicitly says **Fedora 43** includes the needed fixes in native packaging. Meanwhile, AMD's official Ryzen ROCm matrix for Linux is more conservative and officially lists **Ubuntu 24.04.3** for ROCm 7.2 on gfx1151 / Ryzen AI MAX+ 395.
+The foundation is not broken. Fedora 43, kubeadm, containerd, ROCm-in-containers, Vulkan ASR, VAAPI Plex, ArkCase/Qdrant/MinIO — this is a working stack. ~~The loudest problem was kernel 6.18.3 with its SVA regression~~ — **resolved**: kernel upgraded to **6.18.13-200.fc43**, NPU detected and operational (RyzenAI-npu5, FW 1.0.0.166, dmesg clean). AMD's official Ryzen ROCm matrix for Linux is more conservative and officially lists **Ubuntu 24.04.3** for ROCm 7.2 on gfx1151 / Ryzen AI MAX+ 395.
 
 The upgrade path follows this order:
 
-1. **Upgrade the kernel.** Highest-leverage single action. Unblocks NPU. Kernel 6.19.2+ is the clean target, but Fedora 43 repos only ship up to 6.18.x — see Problem 1 for the two-step strategy.
+1. ~~**Upgrade the kernel.**~~ **DONE** — 6.18.13-200.fc43 installed, NPU operational. No need to escalate to 6.19.2+.
 2. **Validate NPU natively on the host, outside Kubernetes.** Do not containerize NPU experiments until native validation is boring.
 3. **Clean up Kubernetes around workload classes and resource policy.** Add quotas, priorities, and better resource modeling.
 4. **Only add another OS if you want a vendor-reference lane**, not as your first rescue move.
@@ -28,8 +28,8 @@ The upgrade path follows this order:
 | **GPU** (ROCm) | Working in K8s | Ollama, ComfyUI, JupyterHub, ACE-Step, BS-RoFormer (5 services sharing one GPU) |
 | **GPU** (Vulkan) | Working in K8s | whisper.cpp streaming ASR in music-intelligence |
 | **GPU** (VAAPI) | Working in K8s | Plex video transcoding (H.264/HEVC/VP9); Mesa 25.2.7 driver confirmed |
-| **NPU** | Blocked | Driver loaded, `/dev/accel/accel0` exists (666 perms), but kernel 6.18.3 SVA regression prevents workloads |
-| **XRT** | Installed | v2.19.0 — `xrt-smi`, `xbutil`, `xclbinutil` all available at `/usr/xrt/` |
+| **NPU** | **Working** | Kernel 6.18.13 fixed SVA regression; `xrt-smi examine` detects RyzenAI-npu5, FW 1.0.0.166, no dmesg errors |
+| **XRT** | Working | v2.19.0 — `xrt-smi` requires root (passwordless sudo rule installed), detects RyzenAI-npu5 |
 | **CVML Libs** | Available | 67 shared libs + 5 xclbin overlays in `ryzen14/`; VitisAI EP present for C++ |
 | **Build Tools** | Ready | GCC 15.2.0, cmake 4.2.3, make 4.4.1 (all via conda-forge) |
 | **K8s Cluster** | Healthy | v1.35.0, containerd 2.1.6, all namespaces running, 33 pods across 8 namespaces |
@@ -64,9 +64,9 @@ Add it on a second SSD/partition for testing — don't migrate everything. ROCm 
 
 ---
 
-## Problem 1: Kernel 6.18.3 Breaks the NPU Driver
+## ~~Problem 1: Kernel 6.18.3 Breaks the NPU Driver~~ RESOLVED
 
-**Impact:** NPU is non-functional — **highest priority blocker**.
+**Impact:** ~~NPU is non-functional — highest priority blocker.~~ **RESOLVED** (2026-03-05) — Kernel upgraded to 6.18.13-200.fc43. NPU fully operational.
 
 Kernels 6.18.0 through 6.18.7 have a documented IOMMU SVA regression that completely breaks the `amdxdna` NPU driver. The driver loads and `/dev/accel/accel0` exists with correct permissions (666), but workloads fail. Kernel dmesg confirms:
 
@@ -258,9 +258,9 @@ Strix Halo is a **unified-memory APU** — CPU, GPU, and NPU all share the same 
 │  └─────────────┘  └──────────────┘  └────────────────────────┘ │
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────────┐│
-│  │  NPU (amdxdna)                                              ││
+│  │  NPU (amdxdna) — RyzenAI-npu5, FW 1.0.0.166                 ││
 │  │  DMA from host memory — no dedicated pool                   ││
-│  │  Currently blocked: xrt-smi reports "No devices found"      ││
+│  │  Operational: xrt-smi detects device (sudo required)        ││
 │  └─────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -323,7 +323,7 @@ The cluster structure is not the immediate blocker, but it can be improved. The 
                                     │
                      ┌──────────────┴──────────────┐
                      │       Fedora 43 Host         │
-                     │  Kernel 6.18.3 (broken NPU)  │
+                     │  Kernel 6.18.13 (NPU working) │
                      │  96 GB unified LPDDR5X        │
                      │  No quotas, no priorities     │
                      └──────────────────────────────┘
@@ -536,9 +536,10 @@ affinity:
 
 These components are confirmed working and require no action:
 
-- XRT 2.19.0 installed with all CLI tools (`xrt-smi`, `xbutil`, `xclbinutil`)
-- NPU device node `/dev/accel/accel0` with correct permissions (666)
-- NPU firmware `17f0_11/npu.sbin.1.0.0.166.xz` present
+- XRT 2.19.0 installed with all CLI tools (`xrt-smi`, `xbutil`, `xclbinutil`); passwordless sudo + ldconfig configured
+- NPU device node `/dev/accel/accel0` with correct permissions (666) — **NPU detected and operational**
+- NPU firmware `17f0_11/npu.sbin.1.0.0.166.xz` present and loaded
+- Kernel 6.18.13-200.fc43 — SVA regression resolved, dmesg clean
 - CVML C++ libs (67 .so + 5 .xclbin) including VitisAI EP
 - Build toolchain (GCC 15.2.0, cmake 4.2.3)
 - Kubernetes cluster healthy (v1.35.0, all workloads running)
@@ -549,39 +550,39 @@ These components are confirmed working and require no action:
 
 | # | Action | Effort |
 |---|---|---|
-| 1 | **Upgrade kernel** — try 6.18.13 first (`dnf upgrade kernel`), escalate to 6.19.2+ if NPU still fails (see Problem 1) | 10 min + reboot (Step A); 30+ min (Step B) |
+| ~~1~~ | ~~**Upgrade kernel** — 6.18.13 installed, NPU working~~ | **DONE** (2026-03-05) |
 | 2 | **Register for [AMD Early Access](https://account.amd.com/en/member/ryzenai-sw-ea.html)** — gate to Linux SDK | 5 min |
 | 3 | **Fix CVML runtime deps** — activate `py310`, set `LD_LIBRARY_PATH` (deps already installed, just not on path) | 2 min |
-| 4 | **Add `amdgpu.cwsr_enable=0`** to kernel cmdline if ROCm instability occurs after kernel upgrade | 2 min |
+| 4 | **Add `amdgpu.cwsr_enable=0`** to kernel cmdline if ROCm instability occurs after kernel upgrade — **not needed so far** (K8s GPU pods running normally on 6.18.13) | 2 min (if needed) |
 | 4a | **Clean up completed K8s jobs** — `hook-image-awaiter` (default ns) and `bs-roformer-sw-benchmark` (music-intelligence) | 1 min |
 
 ### Phase 1 — Native NPU Validation (after kernel upgrade, before K8s)
 
 > **Principle:** Do not containerize NPU experiments until native validation is boring. AMD's Linux paths still involve manual library paths and config edits for some flows. That is not where you add another layer of abstraction.
 
-#### Current Baseline (kernel 6.18.3 — broken)
+#### ~~Current Baseline~~ Verified Post-Upgrade State (2026-03-05)
 
-These are the symptoms to verify are resolved after the kernel upgrade:
+Kernel 6.18.13 resolved the SVA regression. Verified:
 
 ```
-$ xrt-smi examine
-[xrt-smi] ERROR: No devices found.
+$ sudo xrt-smi examine
+NPU Firmware Version : 1.0.0.166
+Device(s) Present
+|BDF             |Name          |
+|----------------|--------------|
+|[0000:c8:00.1]  |RyzenAI-npu5  |
 
 $ dmesg | grep amdxdna
 amdxdna 0000:c8:00.1: enabling device (0000 -> 0002)
 [drm] Initialized amdxdna_accel_driver 0.1.0 for 0000:c8:00.1 on minor 0
-amdxdna 0000:c8:00.1: [drm] *ERROR* aie2_get_info: Not supported request parameter 4
+# No *ERROR* lines — clean
 ```
 
-The driver loads and the device node exists, but the IOMMU SVA regression prevents the driver from communicating with NPU firmware. The `aie2_get_info` error is the telltale.
-
-#### Expected Post-Upgrade State
-
-After a successful kernel upgrade, `xrt-smi examine` should report the NPU device (AIE2P, device ID `17f0`, revision `11`) with firmware version, and dmesg should show no `*ERROR*` lines from `amdxdna`.
+> **Note:** XRT 2.19.0 requires `euid == 0` to enumerate NPU devices. Fixed with passwordless sudo rule (`/etc/sudoers.d/xrt-smi`) and shell alias. XRT libs added to system ldconfig (`/etc/ld.so.conf.d/xrt.conf`).
 
 | # | Action | Effort |
 |---|---|---|
-| 5 | **Reboot and verify NPU** — `xrt-smi examine` should detect NPU; `dmesg \| grep amdxdna` should show no errors | 5 min |
+| ~~5~~ | ~~**Reboot and verify NPU** — RyzenAI-npu5 detected, FW 1.0.0.166, dmesg clean~~ | **DONE** (2026-03-05) |
 | 6 | **Test CVML C++ inference** — run a simple CNN model through VitisAI EP with CVML libs (activate `py310`, set `LD_LIBRARY_PATH`) | 30 min |
 | 7 | **Re-test whisper.cpp VitisAI ORT** — check if ops still fall back to CPU (expected: yes, pending partition pass) | 10 min |
 
@@ -658,9 +659,9 @@ The next real architectural jump is a second node, not distro gymnastics. If upt
 | `~/music-intelligence/` | Whisper large-v3-turbo (streaming ASR) | GPU | Vulkan (whisper.cpp) | Working |
 | `~/music-intelligence/` | Music API, Speech Gateway, PostgreSQL, MinIO | CPU | FastAPI, Swift/gRPC | Phase 0-1 |
 | `~/plex-onprem-k8s/` | Plex Media Server (video transcode) | GPU | VAAPI only (no ROCm) | Working |
-| `~/RyzenAI-SW/` | whisper.cpp VitisAI ORT (encoder offload) | NPU | VitisAI EP + CVML | Blocked (pass) |
-| `~/RyzenAI-SW/` | CNN/Transformer inference | NPU | VitisAI EP | Blocked (SDK) |
-| `~/RyzenAI-SW/` | LLM inference (OGA) | NPU | Ryzen AI SDK | Blocked (SDK) |
+| `~/RyzenAI-SW/` | whisper.cpp VitisAI ORT (encoder offload) | NPU | VitisAI EP + CVML | Blocked (pass) — NPU hw ready |
+| `~/RyzenAI-SW/` | CNN/Transformer inference | NPU | VitisAI EP | Blocked (SDK) — NPU hw ready |
+| `~/RyzenAI-SW/` | LLM inference (OGA) | NPU | Ryzen AI SDK | Blocked (SDK) — NPU hw ready |
 
 ### GPU Contention Risk
 
